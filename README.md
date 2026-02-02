@@ -19,7 +19,7 @@ Open [http://localhost:5173](http://localhost:5173).
 
 ## Logo
 
-A placeholder **`public/health-logo.svg`** (teal “H”) is included. Replace it with your Health logo: add **`public/health-logo.png`** (or replace the SVG) and update the `src` in `src/App.tsx` if needed.
+The Health logo lives at **`public/health-logo.png`**. To replace it, drop in a new image (or update the `src` in `src/App.tsx` if you use a different path).
 
 ## Integration notes
 
@@ -39,3 +39,37 @@ See the comment block at the top of **`src/App.tsx`** for where real integration
 npm run build
 npm run preview
 ```
+
+## Deploy to Vercel
+
+The repo is ready to deploy. You don’t need GitHub for the first deploy.
+
+1. **Log in to Vercel** (once per machine):
+   ```bash
+   npx vercel login
+   ```
+   Follow the prompts (email or GitHub).
+
+2. **Deploy** from the project root:
+   ```bash
+   npx vercel
+   ```
+   First run will ask to link a Vercel project; accept the defaults. You’ll get a URL like `https://health-xxx.vercel.app`.
+
+3. **Production deploy** (optional):
+   ```bash
+   npx vercel --prod
+   ```
+
+### Add GitHub later (optional)
+
+To get a repo and turn on “push to deploy”:
+
+1. Create a **new empty repo** on GitHub (e.g. `health-ai-supervisor`). Don’t add a README or .gitignore.
+2. In this project folder, add the remote and push:
+   ```bash
+   git remote add origin https://github.com/YOUR_USERNAME/health-ai-supervisor.git
+   git branch -M main
+   git push -u origin main
+   ```
+3. In the [Vercel dashboard](https://vercel.com/dashboard), open your project → **Settings** → **Git** and connect the GitHub repo. Future pushes to `main` will auto-deploy.

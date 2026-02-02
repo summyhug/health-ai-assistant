@@ -17,7 +17,16 @@
 import { useMemo, useState, useCallback } from 'react'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
+import { Button } from '@/components/ui/button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { KPIStatCard } from '@/components/KPIStatCard'
 import { RoomCard } from '@/components/RoomCard'
@@ -32,7 +41,7 @@ import {
   getInitialDataHealth,
 } from '@/data/mockData'
 import type { Room, DataHealthItem, BlockerType } from '@/types'
-import { Search, User } from 'lucide-react'
+import { Search, User, Sparkles, Undo2, X } from 'lucide-react'
 
 const UNITS = ['All units', '4 West', '3 East', '5 North'] as const
 const STATUS_OPTIONS = [
@@ -74,8 +83,17 @@ function applyDegradedMode(
   })
 }
 
+export interface RecentAiAction {
+  id: string
+  action: string
+  roomId: string
+}
+
 export default function App() {
   const [pilotMode, setPilotMode] = useState(true)
+  const [pilotTipDismissed, setPilotTipDismissed] = useState(false)
+  const [showPilotOffConfirm, setShowPilotOffConfirm] = useState(false)
+  const [recentAiActions, setRecentAiActions] = useState<RecentAiAction[]>([])
   const [searchQuery, setSearchQuery] = useState('')
   const [unitFilter, setUnitFilter] = useState<string>(UNITS[0])
   const [statusFilter, setStatusFilter] = useState<string>(STATUS_OPTIONS[0])
@@ -115,6 +133,36 @@ export default function App() {
     },
     [showToast]
   )
+
+  const handlePilotModeChange = useCallback(
+    (checked: boolean) => {
+      if (checked) {
+        setPilotMode(true)
+      } else {
+        setShowPilotOffConfirm(true)
+      }
+    },
+    []
+  )
+
+  const confirmPilotModeOff = useCallback(() => {
+    setPilotMode(false)
+    setShowPilotOffConfirm(false)
+    const simulated: RecentAiAction = {
+      id: crypto.randomUUID(),
+      action: 'Notified Bed Manager',
+      roomId: '4W-412B',
+    }
+    setRecentAiActions((prev) => [simulated, ...prev])
+    showToast(
+      'AI took an action: Notified Bed Manager for 4W-412B. You can undo below.'
+    )
+  }, [showToast])
+
+  const undoAiAction = useCallback((id: string) => {
+    setRecentAiActions((prev) => prev.filter((a) => a.id !== id))
+    showToast('Action undone.')
+  }, [showToast])
 
   const toggleMaintenanceStale = useCallback(() => {
     setDataHealth((prev) =>
@@ -189,7 +237,7 @@ export default function App() {
                 <span className="text-sm text-text-muted">Pilot Mode</span>
                 <Switch
                   checked={pilotMode}
-                  onCheckedChange={setPilotMode}
+                  onCheckedChange={handlePilotModeChange}
                   aria-label="Pilot mode"
                 />
               </div>
@@ -202,6 +250,54 @@ export default function App() {
             </div>
           </div>
         </header>
+
+        {/* Floating popup hint when Pilot Mode is on — front layer, dismissible */}
+        {pilotMode && !pilotTipDismissed && (
+          <div
+            className="fixed right-4 top-14 z-[100] flex max-w-[280px] animate-bounce items-start gap-2 rounded-lg border border-primary/30 bg-surface px-3 py-2.5 shadow-lg"
+            role="status"
+            aria-live="polite"
+          >
+            <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+            <div className="min-w-0 flex-1 text-sm text-text">
+              <p>Want to let the AI handle changes?</p>
+              <p className="text-text-muted">
+                Turn off Pilot Mode to enable autonomous actions.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setPilotTipDismissed(true)}
+              className="shrink-0 rounded p-1 text-text-muted hover:bg-slate-100 hover:text-text focus:outline-none focus:ring-2 focus:ring-primary"
+              aria-label="Dismiss hint"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        )}
+
+        {/* Recent AI actions (when Pilot Mode is off) — showcase agentic workflow + undo */}
+        {!pilotMode && recentAiActions.length > 0 && (
+          <div className="border-b border-slate-200 bg-primary/5 px-4 py-2">
+            <div className="mx-auto flex max-w-[1600px] flex-wrap items-center justify-between gap-2">
+              <span className="text-sm font-medium text-text">
+                Latest AI action:{' '}
+                <span className="text-primary-dark">
+                  {recentAiActions[0].action} for {recentAiActions[0].roomId}
+                </span>
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => undoAiAction(recentAiActions[0].id)}
+                className="gap-1.5"
+              >
+                <Undo2 className="h-3.5 w-3.5" />
+                Undo
+              </Button>
+            </div>
+          </div>
+        )}
 
         <main className="mx-auto max-w-[1600px] space-y-6 p-4">
           {/* KPI strip */}
@@ -312,6 +408,29 @@ export default function App() {
           requireConfirmation={requireConfirmation}
           onRequireConfirmationChange={setRequireConfirmation}
         />
+
+        {/* Confirm before turning off Pilot Mode */}
+        <Dialog open={showPilotOffConfirm} onOpenChange={setShowPilotOffConfirm}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Enable autonomous AI?</DialogTitle>
+              <DialogDescription>
+                AI will make decisions and can take actions on your behalf (e.g.
+                notify Bed Manager, reprioritize EVS, create maintenance holds).
+                You can undo recent actions in the bar below the header.
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter className="mt-4 gap-2 sm:gap-0">
+              <Button
+                variant="outline"
+                onClick={() => setShowPilotOffConfirm(false)}
+              >
+                Cancel
+              </Button>
+              <Button onClick={confirmPilotModeOff}>Enable</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
         <Toast
           message={toastMessage}
