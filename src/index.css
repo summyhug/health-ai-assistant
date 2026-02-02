@@ -1,0 +1,20 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --primary: #0EA5A4;
+    --primary-dark: #0B3B4A;
+    --accent: #22C55E;
+    --warning: #F59E0B;
+    --danger: #EF4444;
+    --background: #F8FAFC;
+    --surface: #FFFFFF;
+    --text: #0F172A;
+    --text-muted: #64748B;
+  }
+  body {
+    @apply bg-background text-text font-sans antialiased;
+  }
+}
