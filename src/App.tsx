@@ -33,7 +33,9 @@ import { RoomCard } from '@/components/RoomCard'
 import { AlertsPanel } from '@/components/AlertsPanel'
 import { DataHealthPanel } from '@/components/DataHealthPanel'
 import { ActionDrawer } from '@/components/ActionDrawer'
+import { Chatbot } from '@/components/Chatbot'
 import { Toast } from '@/components/Toast'
+import type { ChatbotAction } from '@/components/Chatbot'
 import {
   mockRooms,
   mockAlerts,
@@ -106,6 +108,7 @@ export default function App() {
   const [dataHealth, setDataHealth] = useState<DataHealthItem[]>(
     getInitialDataHealth
   )
+  const [activeTab, setActiveTab] = useState('alerts')
 
   const showToast = useCallback((msg: string) => {
     setToastMessage(msg)
@@ -184,6 +187,90 @@ export default function App() {
   const roomsWithDegraded = useMemo(
     () => applyDegradedMode(mockRooms, dataHealth),
     [dataHealth]
+  )
+
+  const handleChatbotAction = useCallback(
+    (action: ChatbotAction) => {
+      switch (action.type) {
+        case 'reprioritizeEvs':
+          if (action.payload) {
+            setUnitFilter(action.payload)
+            const aiAction = {
+              id: crypto.randomUUID(),
+              action: `Reprioritized EVS for ${action.payload}`,
+              roomId: action.payload,
+            }
+            setRecentAiActions((prev) => [aiAction, ...prev])
+            showToast(`EVS crews reprioritized to ${action.payload}. Staff notified.`)
+          }
+          break
+        case 'escalateMaintenance':
+          if (action.payload) {
+            setUnitFilter(action.payload)
+            const aiAction = {
+              id: crypto.randomUUID(),
+              action: `Escalated maintenance for ${action.payload}`,
+              roomId: action.payload,
+            }
+            setRecentAiActions((prev) => [aiAction, ...prev])
+            showToast(`Maintenance escalated to prioritize ${action.payload} hardware.`)
+          }
+          break
+        case 'informStaff':
+          if (action.payload) {
+            setUnitFilter(action.payload)
+            const aiAction = {
+              id: crypto.randomUUID(),
+              action: `Informed staff to focus on ${action.payload}`,
+              roomId: action.payload,
+            }
+            setRecentAiActions((prev) => [aiAction, ...prev])
+            showToast(`Staff informed: Focus on cleaning ${action.payload} rooms.`)
+          }
+          break
+        case 'setUnitFilter':
+          if (action.payload) setUnitFilter(action.payload)
+          break
+        case 'setStatusFilter':
+          if (action.payload) {
+            setShowOnlyBlocked(false)
+            setStatusFilter(action.payload)
+          }
+          break
+        case 'setShowOnlyBlocked':
+          setStatusFilter('All statuses')
+          setShowOnlyBlocked(true)
+          break
+        case 'setSearchQuery':
+          if (action.payload) setSearchQuery(action.payload)
+          break
+        case 'resetFilters':
+          setUnitFilter(UNITS[0])
+          setStatusFilter(STATUS_OPTIONS[0])
+          setShowOnlyBlocked(false)
+          setSearchQuery('')
+          break
+        case 'openRoom':
+          if (action.payload) {
+            const room = roomsWithDegraded.find(
+              (r) =>
+                r.roomId.toLowerCase().includes(action.payload!.toLowerCase()) ||
+                action.payload!.toLowerCase().includes(r.roomId.toLowerCase())
+            )
+            if (room) {
+              setSelectedRoom(room)
+              setDrawerOpen(true)
+            }
+          }
+          break
+        case 'switchTab':
+          if (action.payload) setActiveTab(action.payload)
+          break
+        case 'showHelp':
+          break // Chatbot handles response itself
+      }
+    },
+    [roomsWithDegraded, showToast]
   )
 
   const filteredRooms = useMemo(() => {
@@ -276,8 +363,8 @@ export default function App() {
           </div>
         )}
 
-        {/* Recent AI actions (when Pilot Mode is off) — showcase agentic workflow + undo */}
-        {!pilotMode && recentAiActions.length > 0 && (
+        {/* Recent AI actions — showcase agentic workflow + undo (chatbot or autonomous) */}
+        {recentAiActions.length > 0 && (
           <div className="border-b border-slate-200 bg-primary/5 px-4 py-2">
             <div className="mx-auto flex max-w-[1600px] flex-wrap items-center justify-between gap-2">
               <span className="text-sm font-medium text-text">
@@ -306,6 +393,12 @@ export default function App() {
               <KPIStatCard key={kpi.label} metric={kpi} />
             ))}
           </section>
+
+          {/* Healthops Agent — full-width below KPIs */}
+          <Chatbot
+            onAction={handleChatbotAction}
+            useRealAi={false}
+          />
 
           {/* Filters */}
           <section className="flex flex-wrap items-center gap-4 rounded-lg border border-slate-200 bg-surface p-3">
@@ -371,7 +464,11 @@ export default function App() {
               </div>
             </div>
             <div>
-              <Tabs defaultValue="alerts" className="w-full">
+              <Tabs
+                value={activeTab}
+                onValueChange={setActiveTab}
+                className="w-full"
+              >
                 <TabsList className="w-full">
                   <TabsTrigger value="alerts" className="flex-1">
                     Alerts
