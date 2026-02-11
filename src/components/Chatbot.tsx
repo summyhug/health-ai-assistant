@@ -483,98 +483,31 @@ export function Chatbot({ onAction, dashboardContext }: ChatbotProps) {
     scrollToBottom()
   }, [messages])
 
-  // Initial greeting: static when no Groq, or proactive analysis when Groq + context
+  // Initial greeting: always fixed, no LLM on load. Optionally show action request from dashboard patterns.
   useEffect(() => {
     if (messages.length > 0) return
-    if (!useGroq || !apiKey) {
-      setMessages([{ id: crypto.randomUUID(), role: 'assistant', content: GREETING }])
-      return
-    }
-    if (!dashboardContext) {
-      setMessages([{ id: crypto.randomUUID(), role: 'assistant', content: GREETING }])
-      return
-    }
     if (initialGreetingDone.current) return
     initialGreetingDone.current = true
-    setIsLoading(true)
-    const systemPrompt = buildSystemPrompt(dashboardContext)
-    const messagesForGroq: GroqMessage[] = [
-      { role: 'system', content: systemPrompt },
-      {
-        role: 'user',
-        content: 'Analyze the dashboard state above. You MUST call a tool if you see any concerning pattern (blocked rooms, high alerts, EVS backlog in 4 West, etc.). Call reprioritize_evs, escalate_maintenance, or inform_staff with the relevant unit. The user will approve before changes apply.',
-      },
-    ]
-    callGroq(apiKey, messagesForGroq)
-      .then((res) => {
-        if (res.tool_calls?.length) {
-          const first = res.tool_calls[0]
-          let args: Record<string, unknown> = {}
-          try {
-            args = JSON.parse(first.function.arguments || '{}')
-          } catch {}
-          const mapped = toolCallToAction(first.function.name, args)
-          if (mapped) {
-            setPendingAction({
-              toolCallId: first.id,
-              toolName: first.function.name,
-              args,
-              description: mapped.description,
-              action: mapped.action,
-            })
-            const suggestMsg = res.content
-              ? res.content
-              : `I've analyzed the dashboard. I'd like to ${mapped.description}. Please approve below.`
-            setMessages([{ id: crypto.randomUUID(), role: 'assistant', content: suggestMsg }])
-          }
-        }
-        if (res.content && !res.tool_calls?.length) {
-          setMessages([{ id: crypto.randomUUID(), role: 'assistant', content: res.content }])
-          const fallback = suggestFallbackAction(dashboardContext)
-          if (fallback) {
-            const desc =
-              fallback.type === 'reprioritizeEvs'
-                ? `Reprioritize EVS to ${fallback.payload}`
-                : fallback.type === 'switchTab'
-                  ? `Switch to ${fallback.payload} tab`
-                  : ''
-            if (desc) {
-              setPendingAction({
-                toolCallId: `fallback-${crypto.randomUUID()}`,
-                toolName: 'fallback',
-                args: {},
-                description: desc,
-                action: fallback,
-              })
-            }
-          }
-        } else if (!res.tool_calls?.length) {
-          setMessages([{ id: crypto.randomUUID(), role: 'assistant', content: GREETING }])
-          const fallback = suggestFallbackAction(dashboardContext)
-          if (fallback) {
-            const desc =
-              fallback.type === 'reprioritizeEvs'
-                ? `Reprioritize EVS to ${fallback.payload}`
-                : fallback.type === 'switchTab'
-                  ? `Switch to ${fallback.payload} tab`
-                  : ''
-            if (desc) {
-              setPendingAction({
-                toolCallId: `fallback-${crypto.randomUUID()}`,
-                toolName: 'fallback',
-                args: {},
-                description: desc,
-                action: fallback,
-              })
-            }
-          }
-        }
-      })
-      .catch(() => {
-        setMessages([{ id: crypto.randomUUID(), role: 'assistant', content: GREETING }])
-      })
-      .finally(() => setIsLoading(false))
-  }, [useGroq, apiKey, dashboardContext, messages.length])
+    setMessages([{ id: crypto.randomUUID(), role: 'assistant', content: GREETING }])
+    const fallback = suggestFallbackAction(dashboardContext ?? null)
+    if (fallback) {
+      const desc =
+        fallback.type === 'reprioritizeEvs'
+          ? `Reprioritize EVS to ${fallback.payload}`
+          : fallback.type === 'switchTab'
+            ? `Switch to ${fallback.payload} tab`
+            : ''
+      if (desc) {
+        setPendingAction({
+          toolCallId: `fallback-${crypto.randomUUID()}`,
+          toolName: 'fallback',
+          args: {},
+          description: desc,
+          action: fallback,
+        })
+      }
+    }
+  }, [dashboardContext, messages.length])
 
   const addMessage = (role: 'user' | 'assistant', content: string, action?: string) => {
     setMessages((prev) => [
