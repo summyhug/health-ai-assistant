@@ -37,6 +37,9 @@ import { Chatbot } from '@/components/Chatbot'
 import { Toast } from '@/components/Toast'
 import type { ChatbotAction } from '@/components/Chatbot'
 import {
+  buildDashboardContext,
+} from '@/lib/dashboardContext'
+import {
   mockRooms,
   mockAlerts,
   mockKPIs,
@@ -268,9 +271,38 @@ export default function App() {
           break
         case 'showHelp':
           break // Chatbot handles response itself
+        case 'showToast':
+          if (action.payload) showToast(action.payload)
+          break
       }
     },
     [roomsWithDegraded, showToast]
+  )
+
+  const dashboardContext = useMemo(
+    () =>
+      buildDashboardContext(
+        roomsWithDegraded,
+        mockAlerts,
+        dataHealth,
+        mockKPIs,
+        {
+          unit: unitFilter,
+          status: statusFilter,
+          showOnlyBlocked,
+          searchQuery,
+        },
+        activeTab
+      ),
+    [
+      roomsWithDegraded,
+      dataHealth,
+      unitFilter,
+      statusFilter,
+      showOnlyBlocked,
+      searchQuery,
+      activeTab,
+    ]
   )
 
   const filteredRooms = useMemo(() => {
@@ -397,7 +429,7 @@ export default function App() {
           {/* Healthops Agent — full-width below KPIs */}
           <Chatbot
             onAction={handleChatbotAction}
-            useRealAi={false}
+            dashboardContext={dashboardContext}
           />
 
           {/* Filters */}

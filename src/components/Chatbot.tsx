@@ -8,6 +8,8 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Send, Sparkles } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import type { DashboardContext } from '@/lib/dashboardContext'
+import { serializeContextForPrompt } from '@/lib/dashboardContext'
 
 export interface ChatMessage {
   id: string
@@ -29,13 +31,163 @@ export interface ChatbotAction {
     | 'reprioritizeEvs'
     | 'escalateMaintenance'
     | 'informStaff'
+    | 'showToast'
   payload?: string
 }
 
+export type { DashboardContext } from '@/lib/dashboardContext'
+
 export interface ChatbotProps {
   onAction: (action: ChatbotAction) => void
-  /** Optional: when API key is set, could call real AI instead of default handlers */
-  useRealAi?: boolean
+  dashboardContext?: DashboardContext | null
+}
+
+const GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions'
+const GROQ_MODEL = 'llama-3.1-8b-instant'
+
+const GROQ_TOOLS = [
+  {
+    type: 'function' as const,
+    function: {
+      name: 'filter_unit',
+      description: 'Filter the room list by unit (4 West, 3 East, 5 North, or All units)',
+      parameters: {
+        type: 'object',
+        properties: { unit: { type: 'string', enum: ['4 West', '3 East', '5 North', 'All units'] } },
+        required: ['unit'],
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'filter_status',
+      description: 'Filter rooms by status (Ready, Cleaning, Blocked, Unknown, or All statuses)',
+      parameters: {
+        type: 'object',
+        properties: { status: { type: 'string', enum: ['Ready', 'Cleaning', 'Blocked', 'Unknown', 'All statuses'] } },
+        required: ['status'],
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'filter_blocked_only',
+      description: 'Show only blocked rooms',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'set_search',
+      description: 'Search rooms by room ID or unit name',
+      parameters: {
+        type: 'object',
+        properties: { query: { type: 'string', description: 'Search term' } },
+        required: ['query'],
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'reset_filters',
+      description: 'Clear all filters and show all rooms',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'reprioritize_evs',
+      description: 'Reprioritize EVS cleaning crews to a specific unit',
+      parameters: {
+        type: 'object',
+        properties: { unit: { type: 'string', enum: ['4 West', '3 East', '5 North'] } },
+        required: ['unit'],
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'escalate_maintenance',
+      description: 'Escalate maintenance to prioritize a unit',
+      parameters: {
+        type: 'object',
+        properties: { unit: { type: 'string', enum: ['4 West', '3 East', '5 North'] } },
+        required: ['unit'],
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'inform_staff',
+      description: 'Inform staff to focus on cleaning a specific unit',
+      parameters: {
+        type: 'object',
+        properties: { unit: { type: 'string', enum: ['4 West', '3 East', '5 North'] } },
+        required: ['unit'],
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'show_toast',
+      description: 'Show a notification toast to the user',
+      parameters: {
+        type: 'object',
+        properties: { message: { type: 'string' } },
+        required: ['message'],
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'open_room',
+      description: 'Open the room details drawer for a specific room',
+      parameters: {
+        type: 'object',
+        properties: { room_id: { type: 'string', description: 'Room ID e.g. 4W-412B' } },
+        required: ['room_id'],
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'switch_tab',
+      description: 'Switch to Alerts or Data Health tab',
+      parameters: {
+        type: 'object',
+        properties: { tab: { type: 'string', enum: ['alerts', 'data-health'] } },
+        required: ['tab'],
+      },
+    },
+  },
+]
+
+function buildSystemPrompt(ctx: DashboardContext | null): string {
+  const base = `You are the Healthops Agent, an AI assistant for a hospital Room Readiness dashboard. You can observe the dashboard, detect patterns, and take actions with user permission.
+
+When you see concerning patterns (e.g. multiple blocked rooms in one unit, high-severity alerts, stale data, EVS backlog), describe them briefly and suggest an action. Use your tools to execute—the user will be asked to approve before changes are applied.
+
+Be concise. When the user says "yes" or "go ahead" to approve, use the appropriate tool.`
+
+  if (ctx) {
+    return `${base}
+
+CURRENT DASHBOARD STATE (refresh your view):
+${serializeContextForPrompt(ctx)}
+
+Analyze this state. If you see a pattern that warrants action, suggest it and use the tool when the user approves.`
+  }
+  return base
 }
 
 const HELP_MESSAGE = `I can coordinate operational actions. Try saying:
@@ -175,17 +327,133 @@ function parseCommand(text: string): ChatbotAction | null {
   return null
 }
 
-export function Chatbot({ onAction, useRealAi = false }: ChatbotProps) {
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    {
-      id: crypto.randomUUID(),
-      role: 'assistant',
-      content: GREETING,
+type GroqMessage =
+  | { role: 'system'; content: string }
+  | { role: 'user'; content: string }
+  | { role: 'assistant'; content?: string; tool_calls?: Array<{ id: string; function: { name: string; arguments: string } }> }
+  | { role: 'tool'; tool_call_id: string; content: string }
+
+interface GroqResponse {
+  content?: string
+  tool_calls?: Array<{ id: string; function: { name: string; arguments: string } }>
+}
+
+async function callGroq(
+  apiKey: string,
+  messages: GroqMessage[],
+  tools = GROQ_TOOLS
+): Promise<GroqResponse> {
+  const res = await fetch(GROQ_API_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
     },
-  ])
+    body: JSON.stringify({
+      model: GROQ_MODEL,
+      messages,
+      tools,
+      tool_choice: 'auto',
+      temperature: 0.7,
+      max_tokens: 512,
+    }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.error?.message || `Groq API error: ${res.status}`)
+  }
+  const data = await res.json()
+  const msg = data.choices?.[0]?.message ?? {}
+  return {
+    content: msg.content?.trim(),
+    tool_calls: msg.tool_calls,
+  }
+}
+
+function toolCallToAction(
+  name: string,
+  args: Record<string, unknown>
+): { action: ChatbotAction; description: string } | null {
+  switch (name) {
+    case 'filter_unit':
+      return {
+        action: { type: 'setUnitFilter', payload: args.unit as string },
+        description: `Filter to ${args.unit}`,
+      }
+    case 'filter_status':
+      return {
+        action: { type: 'setStatusFilter', payload: args.status as string },
+        description: `Filter to ${args.status} rooms`,
+      }
+    case 'filter_blocked_only':
+      return {
+        action: { type: 'setShowOnlyBlocked', payload: 'true' },
+        description: 'Show only blocked rooms',
+      }
+    case 'set_search':
+      return {
+        action: { type: 'setSearchQuery', payload: args.query as string },
+        description: `Search for "${args.query}"`,
+      }
+    case 'reset_filters':
+      return {
+        action: { type: 'resetFilters' },
+        description: 'Clear all filters',
+      }
+    case 'reprioritize_evs':
+      return {
+        action: { type: 'reprioritizeEvs', payload: args.unit as string },
+        description: `Reprioritize EVS to ${args.unit}`,
+      }
+    case 'escalate_maintenance':
+      return {
+        action: { type: 'escalateMaintenance', payload: args.unit as string },
+        description: `Escalate maintenance for ${args.unit}`,
+      }
+    case 'inform_staff':
+      return {
+        action: { type: 'informStaff', payload: args.unit as string },
+        description: `Inform staff to focus on ${args.unit}`,
+      }
+    case 'show_toast':
+      return {
+        action: { type: 'showToast', payload: args.message as string },
+        description: `Show notification: "${args.message}"`,
+      }
+    case 'open_room':
+      return {
+        action: { type: 'openRoom', payload: args.room_id as string },
+        description: `Open room ${args.room_id}`,
+      }
+    case 'switch_tab':
+      return {
+        action: { type: 'switchTab', payload: args.tab as string },
+        description: `Switch to ${args.tab} tab`,
+      }
+    default:
+      return null
+  }
+}
+
+interface PendingAction {
+  toolCallId: string
+  toolName: string
+  args: Record<string, unknown>
+  description: string
+  action: ChatbotAction
+}
+
+export function Chatbot({ onAction, dashboardContext }: ChatbotProps) {
+  const apiKey = import.meta.env.VITE_GROQ_API_KEY as string | undefined
+  const useGroq = Boolean(apiKey?.trim())
+
+  const [messages, setMessages] = useState<ChatMessage[]>([])
   const [inputValue, setInputValue] = useState('')
+  const [isLoading, setIsLoading] = useState(false)
+  const [pendingAction, setPendingAction] = useState<PendingAction | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+  const initialGreetingDone = useRef(false)
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -195,6 +463,62 @@ export function Chatbot({ onAction, useRealAi = false }: ChatbotProps) {
     scrollToBottom()
   }, [messages])
 
+  // Initial greeting: static when no Groq, or proactive analysis when Groq + context
+  useEffect(() => {
+    if (messages.length > 0) return
+    if (!useGroq || !apiKey) {
+      setMessages([{ id: crypto.randomUUID(), role: 'assistant', content: GREETING }])
+      return
+    }
+    if (!dashboardContext) {
+      setMessages([{ id: crypto.randomUUID(), role: 'assistant', content: GREETING }])
+      return
+    }
+    if (initialGreetingDone.current) return
+    initialGreetingDone.current = true
+    setIsLoading(true)
+    const systemPrompt = buildSystemPrompt(dashboardContext)
+    const messagesForGroq: GroqMessage[] = [
+      { role: 'system', content: systemPrompt },
+      {
+        role: 'user',
+        content: 'Analyze the dashboard state above. What patterns do you see? If something warrants action (e.g. blocked rooms in 4 West, high alerts), say so briefly and use the appropriate tool. The user will approve before changes apply.',
+      },
+    ]
+    callGroq(apiKey, messagesForGroq)
+      .then((res) => {
+        if (res.tool_calls?.length) {
+          const first = res.tool_calls[0]
+          let args: Record<string, unknown> = {}
+          try {
+            args = JSON.parse(first.function.arguments || '{}')
+          } catch {}
+          const mapped = toolCallToAction(first.function.name, args)
+          if (mapped) {
+            setPendingAction({
+              toolCallId: first.id,
+              toolName: first.function.name,
+              args,
+              description: mapped.description,
+              action: mapped.action,
+            })
+            const suggestMsg = res.content
+              ? res.content
+              : `I've analyzed the dashboard. I'd like to ${mapped.description}. Please approve below.`
+            setMessages([{ id: crypto.randomUUID(), role: 'assistant', content: suggestMsg }])
+          }
+        }
+        if (res.content && !res.tool_calls?.length) {
+          setMessages([{ id: crypto.randomUUID(), role: 'assistant', content: res.content }])
+        } else if (!res.tool_calls?.length) {
+          setMessages([{ id: crypto.randomUUID(), role: 'assistant', content: GREETING }])
+        }
+      })
+      .catch(() => {
+        setMessages([{ id: crypto.randomUUID(), role: 'assistant', content: GREETING }])
+      })
+      .finally(() => setIsLoading(false))
+  }, [useGroq, apiKey, dashboardContext, messages.length])
 
   const addMessage = (role: 'user' | 'assistant', content: string, action?: string) => {
     setMessages((prev) => [
@@ -232,27 +556,125 @@ export function Chatbot({ onAction, useRealAi = false }: ChatbotProps) {
         return `Switched to ${action.payload === 'data-health' ? 'Data Health' : 'Alerts'} tab.`
       case 'showHelp':
         return HELP_MESSAGE
+      case 'showToast':
+        return `Showed: ${action.payload}`
       default:
         return 'Done.'
     }
   }
 
-  const handleSend = () => {
+  const runGroqLoop = async (
+    apiKey: string,
+    initialMessages: GroqMessage[],
+    onToolCall: (
+      tc: { id: string; name: string; args: Record<string, unknown> },
+      content?: string
+    ) => boolean
+  ): Promise<string> => {
+    let msgs: GroqMessage[] = [...initialMessages]
+    let lastContent = ''
+    for (let i = 0; i < 5; i++) {
+      const res = await callGroq(apiKey, msgs)
+      if (res.content) lastContent = res.content
+      if (res.tool_calls?.length) {
+        const first = res.tool_calls[0]
+        let args: Record<string, unknown> = {}
+        try {
+          args = JSON.parse(first.function.arguments || '{}')
+        } catch {}
+        const waitForUser = onToolCall(
+          { id: first.id, name: first.function.name, args },
+          res.content
+        )
+        if (waitForUser) return '' // Pending user approval
+        msgs = [
+          ...msgs,
+          { role: 'assistant', content: res.content, tool_calls: res.tool_calls },
+          { role: 'tool', tool_call_id: first.id, content: 'Action executed.' },
+        ]
+        continue
+      }
+      return lastContent || "I'm done."
+    }
+    return lastContent || "I'm done."
+  }
+
+  const executePendingAction = (approved: boolean) => {
+    if (!pendingAction) return
+    const { action } = pendingAction
+    setPendingAction(null)
+    if (approved) {
+      onAction(action)
+      addMessage('assistant', `Done. ${getActionFeedback(action)}`, 'Action applied')
+    } else {
+      addMessage('assistant', 'Understood. I won’t make that change.')
+    }
+  }
+
+  const handleAllow = () => executePendingAction(true)
+  const handleDeny = () => executePendingAction(false)
+
+  const handleSend = async () => {
     const text = inputValue.trim()
-    if (!text) return
+    if (!text || isLoading) return
 
     addMessage('user', text)
     setInputValue('')
 
-    if (useRealAi) {
-      // TODO: Call real AI API when API key is configured
-      addMessage('assistant', 'Real AI integration coming soon. Try the demo commands!')
+    const action = parseCommand(text)
+    if (action && !useGroq) {
+      onAction(action)
+      const feedback = getActionFeedback(action)
+      addMessage('assistant', feedback, action.type !== 'showHelp' ? 'Action applied' : undefined)
       return
     }
 
-    const action = parseCommand(text)
-    if (action) {
-      onAction(action)
+    if (useGroq) {
+      setIsLoading(true)
+      try {
+        const systemPrompt = buildSystemPrompt(dashboardContext ?? null)
+        const chatHistory: GroqMessage[] = [
+          { role: 'system', content: systemPrompt },
+          ...messages.map((m) =>
+            m.role === 'user'
+              ? { role: 'user' as const, content: m.content }
+              : { role: 'assistant' as const, content: m.content }
+          ),
+          { role: 'user', content: text },
+        ]
+        const reply = await runGroqLoop(
+          apiKey!,
+          chatHistory,
+          (tc, content) => {
+            const mapped = toolCallToAction(tc.name, tc.args)
+            if (mapped) {
+              setPendingAction({
+                toolCallId: tc.id,
+                toolName: tc.name,
+                args: tc.args,
+                description: mapped.description,
+                action: mapped.action,
+              })
+              if (content) addMessage('assistant', content)
+              return true
+            }
+            return false
+          }
+        )
+        if (reply) {
+          const actionBadge = action && action.type !== 'showHelp' ? 'Action applied' : undefined
+          addMessage('assistant', reply, actionBadge)
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Failed to get response'
+        addMessage(
+          'assistant',
+          `Sorry, I couldn't reach the AI: ${msg}. Try the demo commands below.`
+        )
+      } finally {
+        setIsLoading(false)
+      }
+    } else if (action) {
       const feedback = getActionFeedback(action)
       addMessage('assistant', feedback, action.type !== 'showHelp' ? 'Action applied' : undefined)
     } else {
@@ -310,6 +732,26 @@ export function Chatbot({ onAction, useRealAi = false }: ChatbotProps) {
           <div ref={messagesEndRef} />
         </div>
 
+        {/* Permission prompt — when AI wants to take action */}
+        {pendingAction && (
+          <div className="border-t border-slate-200 bg-primary/5 px-4 py-3">
+            <p className="mb-2 text-sm font-medium text-text">
+              Allow this action?
+            </p>
+            <p className="mb-3 text-sm text-text-muted">
+              {pendingAction.description}
+            </p>
+            <div className="flex gap-2">
+              <Button size="sm" onClick={handleAllow}>
+                Allow
+              </Button>
+              <Button size="sm" variant="outline" onClick={handleDeny}>
+                Deny
+              </Button>
+            </div>
+          </div>
+        )}
+
         {/* Input */}
         <div className="flex gap-2 border-t border-slate-200 p-3 sm:p-4">
           <Input
@@ -319,12 +761,14 @@ export function Chatbot({ onAction, useRealAi = false }: ChatbotProps) {
             onKeyDown={(e) => e.key === 'Enter' && handleSend()}
             placeholder="Try: Move cleaning crews to 4 West..."
             className="min-w-0 flex-1"
+            disabled={isLoading || !!pendingAction}
           />
           <Button
             size="icon"
             onClick={handleSend}
             aria-label="Send message"
             className="shrink-0"
+            disabled={isLoading || !!pendingAction}
           >
             <Send className="h-4 w-4" />
           </Button>
