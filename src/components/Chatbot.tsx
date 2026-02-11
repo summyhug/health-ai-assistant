@@ -175,17 +175,17 @@ const GROQ_TOOLS = [
 function buildSystemPrompt(ctx: DashboardContext | null): string {
   const base = `You are the Healthops Agent, an AI assistant for a hospital Room Readiness dashboard. You can observe the dashboard, detect patterns, and take actions with user permission.
 
-When you see concerning patterns (e.g. multiple blocked rooms in one unit, high-severity alerts, stale data, EVS backlog), describe them briefly and suggest an action. Use your tools to execute—the user will be asked to approve before changes are applied.
+When you see concerning patterns (e.g. multiple blocked rooms in one unit, high-severity alerts, stale data, EVS backlog), you MUST call the appropriate tool. The user will be asked to approve before changes apply. Do not just describe—call the tool.
 
 Be concise. When the user says "yes" or "go ahead" to approve, use the appropriate tool.`
 
   if (ctx) {
     return `${base}
 
-CURRENT DASHBOARD STATE (refresh your view):
+CURRENT DASHBOARD STATE:
 ${serializeContextForPrompt(ctx)}
 
-Analyze this state. If you see a pattern that warrants action, suggest it and use the tool when the user approves.`
+REQUIRED: Analyze this state. If you see any concerning pattern (blocked rooms, high alerts, EVS backlog, etc.), you MUST call a tool—e.g. reprioritize_evs for 4 West, escalate_maintenance, inform_staff, or filter_blocked_only. If things look fine, give a brief greeting only.`
   }
   return base
 }
@@ -370,6 +370,22 @@ async function callGroq(
   }
 }
 
+function suggestFallbackAction(ctx: DashboardContext | null): ChatbotAction | null {
+  if (!ctx) return null
+  const highAlerts = ctx.alerts.filter((a) => a.severity === 'high')
+  const blockedIn4W = ctx.rooms.filter(
+    (r) => r.unit === '4 West' && (r.status === 'Blocked' || r.status === 'Cleaning')
+  )
+  if (blockedIn4W.length >= 2 || highAlerts.length >= 2) {
+    return { type: 'reprioritizeEvs', payload: '4 West' }
+  }
+  const staleSystem = ctx.dataHealth.find((d) => d.status === 'stale')
+  if (staleSystem) {
+    return { type: 'switchTab', payload: 'data-health' }
+  }
+  return null
+}
+
 function toolCallToAction(
   name: string,
   args: Record<string, unknown>
@@ -451,12 +467,16 @@ export function Chatbot({ onAction, dashboardContext }: ChatbotProps) {
   const [inputValue, setInputValue] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null)
+  const messagesContainerRef = useRef<HTMLDivElement>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const initialGreetingDone = useRef(false)
 
   const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    const container = messagesContainerRef.current
+    if (container) {
+      container.scrollTop = container.scrollHeight
+    }
   }
 
   useEffect(() => {
@@ -482,7 +502,7 @@ export function Chatbot({ onAction, dashboardContext }: ChatbotProps) {
       { role: 'system', content: systemPrompt },
       {
         role: 'user',
-        content: 'Analyze the dashboard state above. What patterns do you see? If something warrants action (e.g. blocked rooms in 4 West, high alerts), say so briefly and use the appropriate tool. The user will approve before changes apply.',
+        content: 'Analyze the dashboard state above. You MUST call a tool if you see any concerning pattern (blocked rooms, high alerts, EVS backlog in 4 West, etc.). Call reprioritize_evs, escalate_maintenance, or inform_staff with the relevant unit. The user will approve before changes apply.',
       },
     ]
     callGroq(apiKey, messagesForGroq)
@@ -510,8 +530,44 @@ export function Chatbot({ onAction, dashboardContext }: ChatbotProps) {
         }
         if (res.content && !res.tool_calls?.length) {
           setMessages([{ id: crypto.randomUUID(), role: 'assistant', content: res.content }])
+          const fallback = suggestFallbackAction(dashboardContext)
+          if (fallback) {
+            const desc =
+              fallback.type === 'reprioritizeEvs'
+                ? `Reprioritize EVS to ${fallback.payload}`
+                : fallback.type === 'switchTab'
+                  ? `Switch to ${fallback.payload} tab`
+                  : ''
+            if (desc) {
+              setPendingAction({
+                toolCallId: `fallback-${crypto.randomUUID()}`,
+                toolName: 'fallback',
+                args: {},
+                description: desc,
+                action: fallback,
+              })
+            }
+          }
         } else if (!res.tool_calls?.length) {
           setMessages([{ id: crypto.randomUUID(), role: 'assistant', content: GREETING }])
+          const fallback = suggestFallbackAction(dashboardContext)
+          if (fallback) {
+            const desc =
+              fallback.type === 'reprioritizeEvs'
+                ? `Reprioritize EVS to ${fallback.payload}`
+                : fallback.type === 'switchTab'
+                  ? `Switch to ${fallback.payload} tab`
+                  : ''
+            if (desc) {
+              setPendingAction({
+                toolCallId: `fallback-${crypto.randomUUID()}`,
+                toolName: 'fallback',
+                args: {},
+                description: desc,
+                action: fallback,
+              })
+            }
+          }
         }
       })
       .catch(() => {
@@ -703,7 +759,10 @@ export function Chatbot({ onAction, dashboardContext }: ChatbotProps) {
       {/* Chat area — full width */}
       <div className="flex min-w-0 flex-1 flex-col">
         {/* Messages */}
-        <div className="flex max-h-[180px] flex-1 flex-col overflow-y-auto p-3 sm:max-h-[140px] sm:p-4">
+        <div
+          ref={messagesContainerRef}
+          className="flex max-h-[180px] flex-1 flex-col overflow-y-auto p-3 sm:max-h-[140px] sm:p-4"
+        >
           {messages.map((msg) => (
             <div
               key={msg.id}

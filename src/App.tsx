@@ -14,7 +14,7 @@
  *   recommend-only; stored in user/session or feature flag.
  */
 
-import { useMemo, useState, useCallback } from 'react'
+import { useMemo, useState, useCallback, useEffect } from 'react'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { Button } from '@/components/ui/button'
@@ -112,6 +112,10 @@ export default function App() {
     getInitialDataHealth
   )
   const [activeTab, setActiveTab] = useState('alerts')
+
+  useEffect(() => {
+    window.scrollTo(0, 0)
+  }, [])
 
   const showToast = useCallback((msg: string) => {
     setToastMessage(msg)
